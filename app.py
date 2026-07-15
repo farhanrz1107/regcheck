@@ -2,125 +2,125 @@ import streamlit as st
 import cv2
 import numpy as np
 from PIL import Image
+import pypdfium2 as pdfium
+import math
+from streamlit_drawable_canvas import st_canvas
 
-# 1. Page Configuration
-st.set_page_config(page_title="UK Build Reg AI - Calibration Suite", layout="wide")
+st.set_page_config(page_title="UK Build Reg AI - Interactive Calibration", layout="wide")
 
-# 2. Sidebar Interface - Calibration & Scale
-st.sidebar.title("📏 Scale & Calibration Suite")
-st.sidebar.write("Configure the plan's real-world dimensions.")
+# ----------------- SIDEBAR -----------------
+st.sidebar.title("📏 Scale & Calibration")
+st.sidebar.write("Calibrate by drawing a line on the plan.")
 st.sidebar.markdown("---")
 
-# Method Selection
-calibration_method = st.sidebar.radio(
-    "Choose Calibration Method:",
-    ("Standard Scale Ratio", "Known Reference Object")
-)
-
-# Initialize scale variable (how many millimeters is 1 pixel?)
-mm_per_pixel = 15.0 
-
-if calibration_method == "Standard Scale Ratio":
-    scale_system = st.sidebar.selectbox("Measurement System:", ("Metric (UK/EU)", "Imperial (US/Historic)"))
-    
-    if scale_system == "Metric (UK/EU)":
-        metric_scale = st.sidebar.selectbox("Select Scale:", ("1:50", "1:100", "1:200"))
-        # Mock conversions based on standard target DPI resolution
-        if metric_scale == "1:50":
-            mm_per_pixel = 10.0
-        elif metric_scale == "1:100":
-            mm_per_pixel = 20.0
-        else:
-            mm_per_pixel = 40.0
-            
-    else:
-        imperial_scale = st.sidebar.selectbox("Select Scale:", ("1/4\" = 1'-0\"", "1/8\" = 1'-0\"", "3/16\" = 1'-0\""))
-        # Convert imperial targets to metric mm equivalents for the UK engine
-        if imperial_scale == "1/4\" = 1'-0\"":
-            mm_per_pixel = 12.7
-        elif imperial_scale == "1/8\" = 1'-0\"":
-            mm_per_pixel = 25.4
-        else:
-            mm_per_pixel = 16.9
-
-elif calibration_method == "Known Reference Object":
-    st.sidebar.info("👉 Use a known dimension on the drawing (e.g., a structural wall length or standard door) to calibrate.")
-    
-    unit_type = st.sidebar.selectbox("Reference Unit:", ("Millimeters (mm)", "Meters (m)", "Inches (in)", "Feet (ft)"))
-    raw_value = st.sidebar.number_input("Enter Known Real-World Length:", min_value=0.1, value=900.0, step=10.0)
-    
-    # Simulate drawing a reference line across pixels
-    pixel_length = st.sidebar.slider("Reference Length in Pixels (Adjust to match object on plan):", min_value=10, max_value=500, value=60)
-    
-    # Convert input to millimeters for the core engine calculation
-    if unit_type == "Meters (m)":
-        real_mm = raw_value * 1000
-    elif unit_type == "Inches (in)":
-        real_mm = raw_value * 25.4
-    elif unit_type == "Feet (ft)":
-        real_mm = raw_value * 304.8
-    else:
-        real_mm = raw_value
-        
-    mm_per_pixel = real_mm / pixel_length
+uploaded_file = st.sidebar.file_uploader("1. Upload Floor Plan", type=["jpg", "jpeg", "png", "pdf"])
 
 st.sidebar.markdown("---")
-uploaded_file = st.sidebar.file_uploader("Upload Floor Plan to Analyze", type=["jpg", "jpeg", "png"])
+st.sidebar.subheader("2. Define Reference Object")
+st.sidebar.info("Tell the app the real-world size of the object you are about to draw a line over.")
 
-# Simulating AI detecting a door width of 45 pixels
-detected_door_pixels = 45
-real_world_width = round(detected_door_pixels * mm_per_pixel, 1)
+unit_type = st.sidebar.selectbox("Reference Unit:", ("Millimeters (mm)", "Meters (m)", "Inches (in)", "Feet (ft)"))
+raw_value = st.sidebar.number_input("Real-World Length:", min_value=0.1, value=900.0, step=10.0)
 
-# 3. Main Interface View
-st.title("🇬🇧 UK Building Regulations Compliance Checker")
-st.subheader("Advanced Part M Validation with Active Scale Calibration")
+# Convert user input to mm for the engine
+if unit_type == "Meters (m)":
+    real_mm = raw_value * 1000
+elif unit_type == "Inches (in)":
+    real_mm = raw_value * 25.4
+elif unit_type == "Feet (ft)":
+    real_mm = raw_value * 304.8
+else:
+    real_mm = raw_value
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("3. Draw to Calibrate")
+st.sidebar.write("Use your mouse to draw a straight line over your reference object on the plan to the right.")
+
+# Default fallback scale if the user hasn't drawn anything yet
+pixel_length = 1.0 
+mm_per_pixel = 15.0  
+
+# ----------------- MAIN VIEW -----------------
+st.title("🇬🇧 UK Building Regulations Checker")
+st.subheader("Interactive Visual Calibration Engine")
 
 if uploaded_file is not None:
-    image = Image.open(uploaded_file)
-    img_array = np.array(image)
+    # Handle PDF or Image
+    if uploaded_file.name.lower().endswith('.pdf'):
+        pdf = pdfium.PdfDocument(uploaded_file)
+        page = pdf[0]
+        pil_image = page.render(scale=2).to_pil()
+    else:
+        pil_image = Image.open(uploaded_file)
+        
+    img_array = np.array(pil_image)
+    if img_array.shape[-1] == 4:
+        img_array = cv2.cvtColor(img_array, cv2.COLOR_RGBA2RGB)
+    
     h, w, _ = img_array.shape
     
     col1, col2 = st.columns([2, 1])
     
-    # Run Approved Document M Rule Engine (Entrance door minimum 775mm)
-    is_compliant = real_world_width >= 775
-    box_color = (0, 255, 0) if is_compliant else (255, 0, 0)
-    
     with col1:
-        st.write("### Live Visual Inspection Map")
+        st.write("### Interactive Plan Viewer")
+        st.caption("Click and drag to draw a line over your known reference object.")
         
-        # Draw simulated bounding box over the entrance door
-        start_point = (int(w * 0.45), int(h * 0.75))
-        end_point = (int(w * 0.55), int(h * 0.85))
-        marked_img = cv2.rectangle(img_array.copy(), start_point, end_point, box_color, 4)
+        # Create the interactive canvas over the uploaded image
+        canvas_result = st_canvas(
+            fill_color="rgba(255, 165, 0, 0.3)",  # Fixed fill color with some opacity
+            stroke_width=3,
+            stroke_color="#FF0000",
+            background_image=pil_image,
+            update_streamlit=True,
+            height=h,
+            width=w,
+            drawing_mode="line", # Forces the user to draw a straight measuring line
+            key="canvas",
+        )
         
-        # Add a text overlay on the plan showing the calculated dimension
-        label = f"Door: {real_world_width}mm"
-        cv2.putText(marked_img, label, (start_point[0], start_point[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, box_color, 2)
-        
-        st.image(marked_img, use_column_width=True)
-        
+        # If the user draws a line, calculate its length in pixels using the Pythagorean theorem
+        if canvas_result.json_data is not None:
+            objects = canvas_result.json_data["objects"]
+            if len(objects) > 0:
+                # Get the last line drawn by the user
+                last_line = objects[-1]
+                x1, y1 = last_line["x1"], last_line["y1"]
+                x2, y2 = last_line["x2"], last_line["y2"]
+                
+                # Calculate pixel distance
+                pixel_length = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+                
+                # Prevent division by zero
+                if pixel_length > 0:
+                    mm_per_pixel = real_mm / pixel_length
+
     with col2:
-        st.write("### Dynamic Compliance Report")
+        st.write("### Active Calibration Data")
         
-        # Display active scale stats so the council sees how it calculated the math
-        st.write("🔧 **Active Calibration Math:**")
-        st.caption(f"1 Pixel on this drawing = {round(mm_per_pixel, 2)} mm in the real world.")
-        st.caption(f"Detected Door size: {detected_door_pixels} pixels.")
-        
-        st.metric(label="Calculated Real Opening Width", value=f"{real_world_width} mm")
-        
-        if is_compliant:
-            st.success("✅ PASSED: ELEMENT COMPLIANT")
-            st.write("**Element:** Principal Entrance Door")
-            st.write("**Regulation:** Approved Document M, Section 1.14")
-            st.info(f"The calculated width of {real_world_width}mm safely meets or exceeds the UK 775mm accessible minimum.")
-        else:
-            st.error("🚨 FAILED: ACCESSIBILITY VIOLATION")
-            st.write("**Element:** Principal Entrance Door")
-            st.write("**Regulation:** Approved Document M, Section 1.14")
-            st.markdown("### Action Required:")
-            st.write(f"The calibrated layout shows a clear opening of only **{real_world_width}mm**. This will block wheelchair access. The plan must be modified to provide an additional **{round(775 - real_world_width, 1)}mm** of width before building control approval can be granted.")
+        if canvas_result.json_data and len(canvas_result.json_data["objects"]) > 0:
+            st.success("Reference line detected!")
+            st.metric(label="Drawn Line Length (Pixels)", value=f"{round(pixel_length, 1)} px")
+            st.metric(label="Assigned Real-World Length", value=f"{real_mm} mm")
+            st.write("---")
+            st.write("### System Scale Factor")
+            st.info(f"**1 Pixel = {round(mm_per_pixel, 2)} mm**")
             
+            st.write("---")
+            st.write("### Simulated AI Check (Part M)")
+            
+            # Simulate the AI detecting a 45-pixel door using the NEW scale
+            detected_door_pixels = 45 
+            real_world_width = round(detected_door_pixels * mm_per_pixel, 1)
+            
+            st.write(f"The AI detected a door opening that is **45 pixels** wide on this drawing.")
+            st.metric(label="Calculated Real Opening", value=f"{real_world_width} mm")
+            
+            if real_world_width >= 775:
+                st.success("✅ PASSED: Minimum 775mm met.")
+            else:
+                st.error(f"🚨 FAILED: Door is {round(775 - real_world_width, 1)}mm too narrow.")
+        else:
+            st.warning("Awaiting calibration... Please draw a line on the plan.")
+
 else:
-    st.info("Please upload a floor plan image in the sidebar to activate the calibration engine.")
+    st.info("Upload a plan to begin.")
