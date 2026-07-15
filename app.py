@@ -4,9 +4,13 @@ import numpy as np
 from PIL import Image, ImageOps
 import pypdfium2 as pdfium
 import math
-from streamlit_drawable_canvas import st_canvas
+from streamlit_image_coordinates import streamlit_image_coordinates
 
 st.set_page_config(page_title="UK Build Reg AI - Pro Calibration", layout="wide")
+
+# Initialize session state to remember where the user clicks
+if "calib_points" not in st.session_state:
+    st.session_state["calib_points"] = []
 
 # ----------------- SIDEBAR -----------------
 st.sidebar.title("📏 Calibration Engine")
@@ -19,15 +23,15 @@ st.sidebar.subheader("2. Set Scale Method")
 
 calibration_mode = st.sidebar.radio(
     "Choose your method:",
-    ("Standard Scale Factor", "Visual Reference (Draw Line)")
+    ("Standard Scale Factor", "Visual Reference (Click 2 Points)")
 )
 
 mm_per_pixel = 15.0  
 pixel_length = 1.0
 real_mm = 900.0
 
-if calibration_mode == "Visual Reference (Draw Line)":
-    st.sidebar.info("Draw a line on the plan to calibrate.")
+if calibration_mode == "Visual Reference (Click 2 Points)":
+    st.sidebar.info("Click two points on the plan to measure a known length.")
     unit_type = st.sidebar.selectbox("Unit:", ("Millimeters (mm)", "Meters (m)", "Inches (in)", "Feet (ft)"))
     raw_value = st.sidebar.number_input("Known Length:", min_value=0.1, value=900.0, step=10.0)
     
@@ -50,6 +54,9 @@ else:
         if imperial_scale == "1/4\" = 1'-0\"": mm_per_pixel = 12.7
         elif imperial_scale == "1/8\" = 1'-0\"": mm_per_pixel = 25.4
         else: mm_per_pixel = 16.9
+        
+    # Clear clicks if they switch back to standard mode
+    st.session_state["calib_points"] = []
 
 # ----------------- MAIN VIEW -----------------
 st.title("🇬🇧 UK Building Regulations Checker")
@@ -57,6 +64,7 @@ st.subheader("Dual-Mode Calibration Engine (Part M)")
 
 if uploaded_file is not None:
     try:
+        # Load PDF or Image
         if uploaded_file.name.lower().endswith('.pdf'):
             pdf = pdfium.PdfDocument(uploaded_file)
             page = pdf[0]
@@ -65,6 +73,7 @@ if uploaded_file is not None:
             pil_image = Image.open(uploaded_file).convert("RGB")
             pil_image = ImageOps.exif_transpose(pil_image)
         
+        # Resize for web performance
         max_width = 800
         w, h = pil_image.size
         if w > max_width:
@@ -73,22 +82,16 @@ if uploaded_file is not None:
             pil_image = pil_image.resize((max_width, new_h), Image.Resampling.LANCZOS)
             w, h = pil_image.size
             
-        clean_array = np.array(pil_image)
-        safe_pil_image = Image.fromarray(clean_array)
-        
-        # FIX: The Memory Anchor
-        # We save the image to st.session_state so Python cannot delete it before the canvas loads it.
-        st.session_state["persistent_image"] = safe_pil_image
-            
         col1, col2 = st.columns([2, 1])
         
         with col1:
             st.write("### Plan Workspace")
             
             if calibration_mode == "Standard Scale Factor":
-                st.caption("👁️ View-only mode. AI Vision active.")
+                st.caption("👁️ View-only mode. AI Vision Mockup active.")
                 
-                marked_img = clean_array.copy()
+                # Mock AI Box
+                marked_img = np.array(pil_image).copy()
                 start_x, start_y = int(w * 0.45), int(h * 0.75)
                 end_x, end_y = start_x + 45, start_y + 80 
                 
@@ -97,43 +100,51 @@ if uploaded_file is not None:
                 
                 cv2.rectangle(marked_img, (start_x, start_y), (end_x, end_y), box_color, 4)
                 
+                # Add text to clearly show it is a placeholder
+                cv2.putText(marked_img, "MOCK AI DETECTION", (start_x - 50, start_y - 10), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2)
+                
                 st.image(marked_img, use_column_width=True)
                 
             else:
-                st.caption("🖱️ Draw a line over your reference object.")
+                st.caption("🖱️ Click Point A, then click Point B to calibrate.")
                 
-                # We feed the canvas the image directly from the persistent memory state
-                canvas_result = st_canvas(
-                    fill_color="rgba(255, 165, 0, 0.3)",
-                    stroke_width=3,
-                    stroke_color="#FF0000",
-                    background_image=st.session_state["persistent_image"], 
-                    update_streamlit=True,
-                    height=h,
-                    width=w,
-                    drawing_mode="line", 
-                    key="canvas",
-                )
+                # Use the stable coordinate clicker instead of the canvas
+                click_data = streamlit_image_coordinates(pil_image, key="pil")
                 
-                if canvas_result.json_data is not None:
-                    objects = canvas_result.json_data["objects"]
-                    if len(objects) > 0:
-                        last_line = objects[-1]
-                        x1, y1 = last_line["x1"], last_line["y1"]
-                        x2, y2 = last_line["x2"], last_line["y2"]
+                # Logic to track exactly 2 clicks
+                if click_data is not None:
+                    point = (click_data["x"], click_data["y"])
+                    
+                    # Prevent registering the exact same click twice in a row
+                    if not st.session_state["calib_points"] or st.session_state["calib_points"][-1] != point:
+                        st.session_state["calib_points"].append(point)
                         
-                        pixel_length = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
-                        
-                        if pixel_length > 0:
-                            mm_per_pixel = real_mm / pixel_length
+                        # If they click a 3rd time, reset and start a new line
+                        if len(st.session_state["calib_points"]) > 2:
+                            st.session_state["calib_points"] = [point]
+
+                # If 2 points are clicked, calculate the math
+                if len(st.session_state["calib_points"]) == 2:
+                    p1 = st.session_state["calib_points"][0]
+                    p2 = st.session_state["calib_points"][1]
+                    pixel_length = math.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
+                    
+                    if pixel_length > 0:
+                        mm_per_pixel = real_mm / pixel_length
 
         with col2:
             st.write("### Calibration Engine Status")
             
-            if calibration_mode == "Visual Reference (Draw Line)":
-                st.success("Target Locked: Visual Calibration")
-                st.metric(label="Reference Length (Pixels)", value=f"{round(pixel_length, 1)} px")
-                st.metric(label="Assigned Size", value=f"{real_mm} mm")
+            if calibration_mode == "Visual Reference (Click 2 Points)":
+                if len(st.session_state["calib_points"]) == 0:
+                    st.warning("Awaiting Click 1 (Point A)...")
+                elif len(st.session_state["calib_points"]) == 1:
+                    st.warning("Awaiting Click 2 (Point B)...")
+                else:
+                    st.success("Target Locked: Visual Calibration")
+                    st.metric(label="Reference Length (Pixels)", value=f"{round(pixel_length, 1)} px")
+                    st.metric(label="Assigned Size", value=f"{real_mm} mm")
             else:
                 st.info("Target Locked: Standard Scale")
                 
@@ -154,6 +165,8 @@ if uploaded_file is not None:
                 st.success("✅ COMPLIANT: Minimum 775mm met.")
             else:
                 st.error(f"🚨 FAILED: Opening is {round(775 - real_world_width, 1)}mm too narrow.")
+                
+            st.caption("*Note: The bounding box on the plan is currently a UI placeholder. Real bounding box mapping requires integration of the YOLOv8 model file.*")
     
     except Exception as e:
         st.error(f"An error occurred loading the image: {e}")
