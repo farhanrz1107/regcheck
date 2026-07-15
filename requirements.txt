@@ -1,5 +1,6 @@
 streamlit==1.37.0
 streamlit-drawable-canvas==0.9.3
 opencv-python-headless
-Pillow
+Pillow==10.4.0
 pypdfium2
+rich<14.0.0
