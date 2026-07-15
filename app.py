@@ -57,7 +57,6 @@ st.subheader("Dual-Mode Calibration Engine (Part M)")
 
 if uploaded_file is not None:
     try:
-        # 1. Process PDF or Image and FORCE a solid RGB background
         if uploaded_file.name.lower().endswith('.pdf'):
             pdf = pdfium.PdfDocument(uploaded_file)
             page = pdf[0]
@@ -66,7 +65,6 @@ if uploaded_file is not None:
             pil_image = Image.open(uploaded_file).convert("RGB")
             pil_image = ImageOps.exif_transpose(pil_image)
         
-        # 2. Resize image slightly for better web performance
         max_width = 800
         w, h = pil_image.size
         if w > max_width:
@@ -75,44 +73,41 @@ if uploaded_file is not None:
             pil_image = pil_image.resize((max_width, new_h), Image.Resampling.LANCZOS)
             w, h = pil_image.size
             
-        # 3. FIX: Strip Metadata
-        # By converting to a NumPy array and back, we destroy any hidden PDF data
-        # that was crashing the React Canvas serializer on the cloud.
         clean_array = np.array(pil_image)
         safe_pil_image = Image.fromarray(clean_array)
+        
+        # FIX: The Memory Anchor
+        # We save the image to st.session_state so Python cannot delete it before the canvas loads it.
+        st.session_state["persistent_image"] = safe_pil_image
             
         col1, col2 = st.columns([2, 1])
         
         with col1:
             st.write("### Plan Workspace")
             
-            # 4. ADAPTIVE UI: Swap between native image viewer and canvas tool
             if calibration_mode == "Standard Scale Factor":
                 st.caption("👁️ View-only mode. AI Vision active.")
                 
-                # Draw a mock AI detection bounding box on the image
                 marked_img = clean_array.copy()
                 start_x, start_y = int(w * 0.45), int(h * 0.75)
-                end_x, end_y = start_x + 45, start_y + 80 # Simulating a 45-pixel wide door
+                end_x, end_y = start_x + 45, start_y + 80 
                 
-                # Check compliance color
                 is_compliant = (45 * mm_per_pixel) >= 775
                 box_color = (0, 255, 0) if is_compliant else (255, 0, 0)
                 
                 cv2.rectangle(marked_img, (start_x, start_y), (end_x, end_y), box_color, 4)
                 
-                # Display using Streamlit's native viewer (Guaranteed to render)
                 st.image(marked_img, use_column_width=True)
                 
             else:
                 st.caption("🖱️ Draw a line over your reference object.")
                 
-                # Load the interactive Canvas
+                # We feed the canvas the image directly from the persistent memory state
                 canvas_result = st_canvas(
                     fill_color="rgba(255, 165, 0, 0.3)",
                     stroke_width=3,
                     stroke_color="#FF0000",
-                    background_image=safe_pil_image, 
+                    background_image=st.session_state["persistent_image"], 
                     update_streamlit=True,
                     height=h,
                     width=w,
