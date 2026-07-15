@@ -1,21 +1,12 @@
 import streamlit as st
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 import pypdfium2 as pdfium
 import math
-import base64
-import io
 from streamlit_drawable_canvas import st_canvas
 
 st.set_page_config(page_title="UK Build Reg AI - Pro Calibration", layout="wide")
-
-# Helper function to fix the invisible canvas bug on Streamlit Cloud
-def get_image_base64(pil_image):
-    buffered = io.BytesIO()
-    pil_image.save(buffered, format="PNG")
-    img_str = base64.b64encode(buffered.getvalue()).decode()
-    return f"data:image/png;base64,{img_str}"
 
 # ----------------- SIDEBAR -----------------
 st.sidebar.title("📏 Calibration Engine")
@@ -26,10 +17,8 @@ uploaded_file = st.sidebar.file_uploader("1. Upload Floor Plan (PDF/Image)", typ
 st.sidebar.markdown("---")
 st.sidebar.subheader("2. Set Scale (Choose Method)")
 
-# Use Tabs to give the user both options neatly
 tab1, tab2 = st.sidebar.tabs(["Visual Reference", "Standard Scale"])
 
-# Default fallback values
 mm_per_pixel = 15.0  
 pixel_length = 1.0
 
@@ -38,15 +27,10 @@ with tab1:
     unit_type = st.selectbox("Unit:", ("Millimeters (mm)", "Meters (m)", "Inches (in)", "Feet (ft)"))
     raw_value = st.number_input("Known Length:", min_value=0.1, value=900.0, step=10.0)
     
-    # Convert to mm
-    if unit_type == "Meters (m)":
-        real_mm = raw_value * 1000
-    elif unit_type == "Inches (in)":
-        real_mm = raw_value * 25.4
-    elif unit_type == "Feet (ft)":
-        real_mm = raw_value * 304.8
-    else:
-        real_mm = raw_value
+    if unit_type == "Meters (m)": real_mm = raw_value * 1000
+    elif unit_type == "Inches (in)": real_mm = raw_value * 25.4
+    elif unit_type == "Feet (ft)": real_mm = raw_value * 304.8
+    else: real_mm = raw_value
         
 with tab2:
     st.info("Apply a standard architectural scale.")
@@ -68,19 +52,18 @@ st.title("🇬🇧 UK Building Regulations Checker")
 st.subheader("Dual-Mode Calibration Engine (Part M)")
 
 if uploaded_file is not None:
-    # Process PDF or Image
+    # Process PDF or Image and FORCE a solid RGB background
     if uploaded_file.name.lower().endswith('.pdf'):
         pdf = pdfium.PdfDocument(uploaded_file)
         page = pdf[0]
-        pil_image = page.render(scale=2).to_pil()
+        # scale=2 for high resolution, convert("RGB") fixes transparency bugs
+        pil_image = page.render(scale=2).to_pil().convert("RGB")
     else:
-        pil_image = Image.open(uploaded_file)
-        
-    img_array = np.array(pil_image)
-    if img_array.shape[-1] == 4:
-        img_array = cv2.cvtColor(img_array, cv2.COLOR_RGBA2RGB)
+        pil_image = Image.open(uploaded_file).convert("RGB")
+        # Ensure it's right-side up based on EXIF data
+        pil_image = ImageOps.exif_transpose(pil_image)
     
-    # Resize image slightly for better web performance while keeping aspect ratio
+    # Resize image slightly for better web performance
     max_width = 800
     w, h = pil_image.size
     if w > max_width:
@@ -89,16 +72,13 @@ if uploaded_file is not None:
         pil_image = pil_image.resize((max_width, new_h), Image.Resampling.LANCZOS)
         w, h = pil_image.size
         
-    # Convert image to base64 to fix the Streamlit Cloud invisible background bug
-    bg_img_b64 = get_image_base64(pil_image)
-    
     col1, col2 = st.columns([2, 1])
     
     with col1:
         st.write("### Plan Workspace")
         st.caption("If using 'Visual Reference', draw your line here.")
         
-        # Load the canvas with the base64 background to ensure it renders on Cloud
+        # Canvas should now display perfectly
         canvas_result = st_canvas(
             fill_color="rgba(255, 165, 0, 0.3)",
             stroke_width=3,
@@ -111,7 +91,6 @@ if uploaded_file is not None:
             key="canvas",
         )
         
-        # Determine which calibration method is active based on user interaction
         active_calibration = "Standard"
         
         if canvas_result.json_data is not None:
@@ -122,7 +101,6 @@ if uploaded_file is not None:
                 x1, y1 = last_line["x1"], last_line["y1"]
                 x2, y2 = last_line["x2"], last_line["y2"]
                 
-                # Pythagoras for pixel length
                 pixel_length = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
                 
                 if pixel_length > 0:
@@ -145,7 +123,6 @@ if uploaded_file is not None:
         st.write("---")
         st.write("### AI Part M Compliance Check")
         
-        # Simulate AI door detection
         detected_door_pixels = 45 
         real_world_width = round(detected_door_pixels * mm_per_pixel, 1)
         
